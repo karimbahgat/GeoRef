@@ -6,8 +6,9 @@ by Karim Bahgat, 2014
 Unfinished alpha version
 """
 
-import timetaker,messages
+from helpers import timetaker,messages
 from downloader import *
+from datamanager import *
 
 #INTERNAL USE ONLY
 class Geocoder:

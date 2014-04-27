@@ -10,7 +10,7 @@ Unfinished alpha version
 """
 
 import sys,os,shutil,time,csv,threading,urllib,zipfile
-import messages,pypath
+from helpers import messages,pypath
 
 def DownloadCities(pointless=0):
     """
