@@ -1,0 +1,10 @@
+(dp0
+S'countrydata'
+p1
+S'path/name'
+p2
+sS'provdata'
+p3
+S'path/name'
+p4
+s.
