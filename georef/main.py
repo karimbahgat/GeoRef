@@ -26,9 +26,9 @@ class Geocoder:
     """
     def __init__(self):
         pass
-    def AddMatchCondition(self):
+    def add_match_condition(self):
         pass
-    def FindMatch(self):
+    def find_match(self):
         #load and open country lookup table
         #loop through country table
         #   compare each record with the queried names/match conditions
@@ -37,15 +37,15 @@ class Geocoder:
         pass
 
 #USER FUNCTIONS
-def Geocode(city=None, adm1=None, adm2=None, adm3=None, admx=None, country=None):
+def geocode(city=None, adm1=None, adm2=None, adm3=None, admx=None, country=None):
     """
     Should return a dictionary with matched city,adm,country,shapetype,point/polygon coordinates,match similarity etc.
     """
     names = city,adm1,adm2,adm3,admx,country
     geocoder = Geocoder()
     for name in names:
-        geocoder.AddMatchCondition(name)
-    results = geocoder.FindMatch()
+        geocoder.add_match_condition(name)
+    results = geocoder.find_match()
     return results
 
 if __name__ == "__main__":
