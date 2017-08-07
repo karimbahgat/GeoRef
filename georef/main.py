@@ -1,53 +1,204 @@
-"""
-GeoRef
-Python Offline Georeferencer
-by Karim Bahgat, 2014
 
-Unfinished alpha version
-"""
+# PLAN
+# for each GNS placename shapefile
+#   for each year
+#     add relationship to gaul adm3 for that year
+#     add relationship to gaul adm2 for that year
+#     add relationship to gaul adm1 for that year
+#     add relationship to gaul country for that year
+#     for each gaul country relationship
+#       save as country year specific placename shapefile
 
-from helpers import timetaker,messages
-from downloader import *
-from datamanager import *
+# - gaul country
+#   - 1990
+#   - 1991
+#   - ....
+
+# ...geomatch routine...
+# for row in data:
+#   matches = []
+#   prov3data = getprovdata(findgaulcountryame(row[country]))
+#   for refrow in prov3data:
+#     citymatch = similar(row[city],refrow[city])
+#     if citymatch > 80:
+#       refrow[countrymatch] = similar(row[country],refrow[country])
+#       refrow[countrymatch] = similar(row[adm1],refrow[adm1])
+#       matches.append(refrow)
+
+import sqlite3
+import cPickle as pickle
+from itertools import izip, groupby
+
+import shapefile as pyshp
+import shapely
+from shapely.geometry.geo import asShape, mapping
+from shapely.prepared import prep
+import rtree
+
+# refdata has unlimited fields containing match names
+class RefData:
+    def __init__(self, filepath, encoding="utf8"):
+        self.reader = pyshp.Reader(filepath)
+        self.fields = [f[0] for f in self.reader.fields[1:]]
+        self.encoding = encoding
+        self.relationships = dict()
+
+    def add_relationship(self, tag, refdata, namefield, idfields=None):
+        # refdata can either exist from before, or be created via spatial overlap
+        self.relationships[tag] = dict(refdata=refdata, namefield=namefield)
+
+    def create(self, savepath):
+        # TODO: ALLOW TIME DIMENSION AND OTHER SUBGROUPINGS...
+        # MAYBE EVEN NESTED SUBFOLDERS FOR SUPER QUICK ACCESS
+        # MOST IMPORTANT: IF SELF IS POINTS AND OTHER IS POLYGON, THEN MUCH FASTER TO LOOP POLYS THEN JOIN WITH ALL MATCHING POINTS
+        # PROB ALSO GOOD TO JOIN ENTIRE ROWS MULTIPLE TIMES INSTEAD OF KEEPING ONE ROW AND ONLY WRITING A SINGLE DELIMITED STRING
+        # ...
+
+        def rowdecode(row):
+            return [val.decode(self.encoding) if isinstance(val, basestring) else val for val in row]
+
+        # routine for geomatching one relationship
+        def geomatch(tag, subdict):
+            # optimize if self is points or has more items
+            if self.reader.shapeType in (pyshp.POINT, pyshp.MULTIPOINT) or len(self.reader) > len(subdict["refdata"].reader):
+                # create spindex
+                if not hasattr(self, "spindex"):
+                    self.spindex = rtree.index.Index()
+                    for i,shp in enumerate(self.reader.iterShapes()):
+                        bbox = [shp.points[0][0],shp.points[0][1],shp.points[0][0],shp.points[0][1]] if shp.shapeType == pyshp.POINT else shp.bbox
+                        self.spindex.insert(i, bbox)
+
+                # first reverse matching for speed
+                def revmatches():
+                    for row,shp in izip(subdict["refdata"].reader.iterRecords(), subdict["refdata"].reader.iterShapes()):
+                        #if dict(zip(self.fields, row))["SOV0NAME"] != "Russia": continue
+                        #print "...",row[1] #row[4],row[14]
+                        print str(row)[:100]
+                        prepped = prep(asShape(shp)) # prepares geometry for many intersection tests (maybe only useful if is polygon and other is points, but not sure)
+                        bbox = [shp.points[0][0],shp.points[0][1],shp.points[0][0],shp.points[0][1]] if shp.shapeType == pyshp.POINT else shp.bbox
+                        ilist = self.spindex.intersection(bbox)
+                        for i in ilist:
+                            othershp = self.reader.shape(i)
+                            if prepped.intersects(asShape(othershp)):
+                                yield row,i
+
+                lookups = dict()
+                key = lambda(row,i): i
+                for i,items in groupby(sorted(revmatches(), key=key), key=key):
+                    names = []
+                    for matchrow,i in items:
+                        name = dict(zip(subdict["refdata"].fields, matchrow))[subdict["namefield"]]
+                        name = name.decode(subdict["refdata"].encoding) if isinstance(name, basestring) else name
+                        names.append(name)
+
+                    matches = "|".join(names)
+                    lookups[i] = matches
+
+                for i,row in enumerate(self.reader.iterRecords()):
+                    matches = lookups.get(i, None)
+                    print i, matches
+                    yield matches
+
+            else:
+                # create spindex
+                subdict["spindex"] = rtree.index.Index()
+                for i,shp in enumerate(subdict["refdata"].reader.iterShapes()):
+                    bbox = [shp.points[0][0],shp.points[0][1],shp.points[0][0],shp.points[0][1]] if shp.shapeType == pyshp.POINT else shp.bbox
+                    subdict["spindex"].insert(i, bbox)
+
+                # match each
+                for row,shp in izip(self.reader.iterRecords(), self.reader.iterShapes()):
+                    #if dict(zip(self.fields, row))["SOV0NAME"] != "Russia": continue
+                    #print "...",row[1] #row[4],row[14]
+                    prepped = prep(asShape(shp)) # prepares geometry for many intersection tests (maybe only useful if is polygon and other is points, but not sure)
+                    
+                    subdict["matches"] = []
+                    refdata = subdict["refdata"]
+                    namefield = subdict["namefield"]
+                    spindex = subdict["spindex"]
+                    bbox = [shp.points[0][0],shp.points[0][1],shp.points[0][0],shp.points[0][1]] if shp.shapeType == pyshp.POINT else shp.bbox
+                    ilist = spindex.intersection(bbox)
+                    for i in ilist:
+                        othershp = refdata.reader.shape(i)
+                        #for otherrow,othershp in zip(refdata.reader.iterRecords(), refdata.reader.iterShapes()):
+                        if prepped.intersects(asShape(othershp)):
+                            otherrow = refdata.reader.record(i)
+                            otherrow = rowdecode(otherrow)
+                            name = dict(zip(refdata.fields, otherrow))[namefield]
+                            subdict["matches"].append(name)
+                    subdict["matches"] = "|".join(subdict["matches"])
+
+                    print row, subdict["matches"]
+
+                    yield subdict["matches"]
+
+        # create iterators for all relationships
+        reliters = []
+        for tag,subdict in self.relationships.items():
+            reliters.append(list(geomatch(tag,subdict))) # must be list, to avoid simultaneous iterating
+
+        # finally, zip original rows with all relationship iterators
+        def outrows():
+            matchrows = izip(*reliters) 
+            for feat,matchrow in izip(self.reader.iterShapeRecords(), matchrows):
+                newrow = rowdecode(feat.record) + [feat.shape.__geo_interface__] + list(matchrow)
+                yield newrow
+
+        # setup db writer (AND ADD REL FIELDS...)
+        import os
+        if os.path.exists(savepath) and input("Overwrite %s? " % savepath):
+            os.remove(savepath)
+        
+        db = sqlite3.connect(savepath, detect_types=sqlite3.PARSE_DECLTYPES)
+        sqlite3.register_adapter(dict, pickle.dumps)
+        sqlite3.register_converter("dict", pickle.loads)
+
+        def field2col(name,typ,size,deci):
+            if typ == "C":
+                return name,"text"
+            elif typ == "N" and deci == 0:
+                return name,"int"
+            elif (typ == "N" and deci > 0) or typ == "F":
+                return name,"real"
+            else:
+                raise Exception("Unknown type %s" % typ)
+
+        fields = [f for f in self.reader.fields[1:]]
+        columns = [field2col(name,typ,size,deci) for name,typ,size,deci in fields]
+        columns += [("geojson","dict")]
+
+        columns += [(tag,"text") for tag in self.relationships.keys()] # add extra fields (force text)
+        
+        columnstring = ", ".join(("%s %s" % (name,typ) for name,typ in columns))
+        print columnstring
+
+        db.execute("""
+                    CREATE TABLE data (%s);
+                    """ % columnstring
+                   )
+
+        # batch write to file
+        question_marks = ", ".join("?" for _ in range(len(columns)))
+        db.executemany("""
+                    INSERT INTO data VALUES (%s);
+                    """ % question_marks, outrows())
+        db.commit()
+        db.close()
+
+       
 
 
 
-# FOR ADVANCED INSPIRATION AND ALGORITHM,
-# SEE: https://github.com/mapbox/carmen/tree/master/test
+class StreamData(object):
+    def __init__(self, fields, featgen):
+        self.fields = fields
+        self.featgen = featgen
+
+    def __iter__(self):
+        for feat in self.featgen():
+            yield feat
 
 
-
-#INTERNAL USE ONLY
-class Geocoder:
-    """
-    The class that does the geocoding behind the scene
     
-    IDEA: make geocoding condition a simple str expression for exec()...
-    """
-    def __init__(self):
-        pass
-    def add_match_condition(self):
-        pass
-    def find_match(self):
-        #load and open country lookup table
-        #loop through country table
-        #   compare each record with the queried names/match conditions
-        #   create match dictionary if match above threshold
-        #return all match dictionaries
-        pass
 
-#USER FUNCTIONS
-def geocode(city=None, adm1=None, adm2=None, adm3=None, admx=None, country=None):
-    """
-    Should return a dictionary with matched city,adm,country,shapetype,point/polygon coordinates,match similarity etc.
-    """
-    names = city,adm1,adm2,adm3,admx,country
-    geocoder = Geocoder()
-    for name in names:
-        geocoder.add_match_condition(name)
-    results = geocoder.find_match()
-    return results
 
-if __name__ == "__main__":
-    #Download("gadm", downpath="C:/Users/BIGKIMO/Desktop/GADM_dl")
-    pass
